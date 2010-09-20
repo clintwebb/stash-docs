@@ -1,0 +1,24 @@
+The stash servers are able to synchronise amongst themselves, and this 
+protocol is used to do it.
+
+slave server needs to login using an account that has the SYNC right.
+
+Then can do a synch request.
+
+Slav can do a subscribe request, which means that when updates occur on 
+the server, those updates will be sent to the slave also.
+
+
+Challenges.
+When the master server is running, it has in-memory a map of how things 
+are at that particular moment.
+When a slave connects and asks for all the transactions since a 
+particular one, then it will have to load in the files to find that 
+transaction and transmit all the new ones since then.   This could be 
+time consuming if the slaves are all popping in at the same time... so 
+it would need to be a little smart and cache things for a bit....
+that can all be handled during performance upgrades though.
+
+
+
+

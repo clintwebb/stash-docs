@@ -1,0 +1,13 @@
+Performance Ideas
+
+Ideas for performance as writing the software.  These can be implemented later if performance requirements become a priority.
+
+--------------------------------------------
+Remove un-necessary date entries from the operations.  This will reduce the size of the operation stored by 5 bytes.  Not much, but becomes a bit when we have millions of records.  Also, by removing it, it becomes 1 less thing that we have to parse for each operation.
+To get away with this, we only store the date when the date changes.  This also means we have to be a little bit careful when removing transactions.
+
+--------------------------------------------
+When saving the transaction to the file, if we have an event system, need to be able to save it to a queue and set a timer to go off periodically and flush the buffer out.  Not sure how much gain we would actually get out of that, because the OS should be buffering the writes anyway... but we can test it.
+--------------------------------------------
+
+With the 'storage' object, we use lists heavily.  The point being that as users are added and deleted, the userID's will start spreading out over a large array.   With lists, we can expand and contract as necessary.  I'm not sure yet what will be the most useful.  So I'm building it for lists right now, but at some point we might want to change it to an array, test and see how it impacts performance.

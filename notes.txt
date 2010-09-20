@@ -1,0 +1,169 @@
+Notes for stash project have been done in Google Wave.
+
+----
+
+File storage.
+
+Most of the data will be stored in an appended transaction log.  This will be reloaded on startup, and distributed to the slave nodes.  Each entry in the log will be given a large 64 bit number.  When slave nodes want updates they indicate the number of the last update they had and the system will send out the transactions that they haven't got, and will continue to send updates to them when new items are changed.
+
+Dynamically it will move the 'master' status of a table to other servers if they are getting more requests.  That way the updates will go to the most efficient server.
+This is getting complicated.
+
+We will have the main meta file which would list all the databases, but would not contain any particular table data.  Each table will have its own file that will need to be loaded and processed.   
+
+Do we want cluster information contained in the database file itself?   That makes it easier to distribute such changes, but makes it a little inflexible.
+
+Each server would need to have a rigid address that it listens on.  When cluster members come and go, we would need to mark it in the meta file.   
+
+----
+
+Settings file 
+	config will be in a file that needs to be loaded and parsed.
+
+File import at startup. 
+	- first it will load the meta file, and then once it has processed that, will load all the tables.
+
+FileWriter.  Write out the transactions to the files.  There would need to be one per table, as well as the meta.
+
+
+
+------------
+BEST PRACTICES
+
+The stash system is different to databases and has a completely different philosophy.   With databases you want to seperate your data into tables to normalize it out.  You have keys in tables that match so that you can join the data together.   With stash, you do a little of the opposite.   You put all your data that is related to each other and put it in a big bucket.   You can store different kinds of data in that bucket.  
+
+As an example, if we had a service that listed books, we would want to store some information about the book, as well as author, and maybe other books that are related in a series...  To put that simple example in a database we already come up with some inconvenient design decisions.
+
+For example, how can we easily specify if a book is part of a series?    Or, what if there is more than one author of the book?
+
+This simple example does not fit well into a relational database design well.   You would have to compromize a bit for something that is usable.
+
+In the stash model, it is very different.   You have a single 'table' called Books.    You have different 'rows' in this table where the name indicates the kind of data that is in there.
+
+It might look something like:
+
+Books table
+author: author_id=127, name='Milton Hilderbrand'
+author: author_id=168, name='Helga Voldstraat'
+book: book_id=4001, title='Moon Below', published='1997', author_id=127, author_id=168
+author: author_id=201, name='Fred Masters'
+saga: saga_id=14 title='Fridge Salesman', author_id=201
+book: book_id=4015, title='Into the cold zone', published='2001', author_id=201, saga_id=14, saga_sequence=1
+book: book_id=4016, title='Hotter than cold', published='2002', author_id=201, saga_id=14, saga_sequence=2
+book: book_id=4017, title='Too cold to be cool', published='2004', author_id=201, saga_id=14, saga_sequence=3
+
+Here, we have ultimate flexibility.   If we do a 'query' on all records that have author_id=127, then we get back:
+author: author_id=127, name='Milton Hilderbrand'
+book: book_id=4001, title='Moon Below', published='1997', author_id=127, author_id=168
+
+Which is incredibly useful because it returns pretty much all the information we need, and it does not take a complicated query to do it.  All the processing can be done on the client side, rather than the server side.
+
+In this example, we get back two author_id fields for the book.  This means that the book has two authors.   We would have to do another query to get the information about the second author.  Which is also easy to do.
+
+	When dealing with a record that has more than one attribute of the same name, we need to use the internal field ID to indicate which one we are changing.   
+
+When creating new records, we want to use some fields to autoincrement.   This is done when setting the value.  The stash server itself will keep track of the next ID to use.   Also, from the library and protocol perspective.  Every time a record is created or edited, the affected fields in the record are returned (unless told not too, which might be a good idea if the data it contains is very large).  You would certainly want to get this returned data if you were using an Autoincrement.
+
+If we are adding a new author and book, instead of assigning ID numbers, we let the system do it.
+	author: author_id=%%, name='Brandon Pendragon'
+
+when the record is returned we get something like:
+	author: author_id=299, name='Brandon Pendragon'
+
+and so then we can 
+	book: book_id=%%, title='Moon Below', published='1997', author_id=299
+
+Also note, that we dont have to do entire records at a time either.   We can add new name/value pairs at any time.   If we created an entire database of books and authors and then decided to add some extra info to particular records, we can without having to add another column to the table.
+
+This might be useful if we wanted to add some summary notes about the book, or maybe an image of the front and back cover.   All that information can be _added_ to the table without affecting what is already there, and without taking up any additional space.   We could add pictures of the author, and without affecting the database design could include _multiple_ pictures of the author.  
+
+The data types within the database are:
+ * Boolean
+ * Integer (32 bit)
+ * Long (64 bit)
+ * String (16 bit length, max of 64kb)
+ * Binary
+ * Datetime
+ * Hashmap
+
+		### actually, I need to think more about the data types.  
+		### I wanted it to be simple, with only the types that are 
+		### likely to be used for filtering and comparing... 
+		### and already got 7 data types.
+
+The hashmap data type can be very useful when you want to store a single logical item, but it may contain seperate peices of information.  The photo of an author would be a good example.  We could have it so that multiple photos could be stored, but we want some information about each one.  Such as the photo image, and a date the photo was taken, some copyright info about the photo, and whether it is a preferred one or not.   All that info is about a particular item, but they are usefully seperated.  The API treats the hashmap as a single unit, and therefore it can only be updated as a whole, the individual elements in the hashmap cant be edited independantly.
+
+Additionally, the value in the hashmap can contain another hashmap.  Continuously.  You now end up with a highly index, multi dimensional data storage system.
+
+------------
+Indexes
+
+The stash server itself will need to index everything.  It wont keep all the data in memory, but it will certainly keep an index into everything.   It should be designed to use as much memory as is needed to keep everything it needs.   If it needs to use swap memory for it, then that is what it will have to do.   If it has tables that it loads, but is very rarely accessed, then they can be swapped out if needed.   We'll let the operating system handle that.   We will just want to make sure that there is enough memory for our data set that is in use.    Same with indexed elements that aren't being needed.   If we have an attribute that no-one is searching on, it will get swapped out.  If new entries are being added, then can be without affecting what has been swapped out, hopefully.
+
+------------
+Network protocol authentication
+
+Each operation will be a READ or a WRITE.   You are either retreiving information, or storing information.   Each operation will require some sort of authentication to determine if it is allowed to do that.   Therefore, each query will need to be wrapped inside a security message.
+
+To make this a little easier, we will deal with authenticated sessions.    When a client connects using a particular username and password, it will be given a sessionid and token.   Every operation that it does, will need to include that token.    It will also need to include a sequence number.  If the client sends requests out of sync, then those requests will be ignored.   This will be needed for every operation.   The server will use that info to look up the user details
+
+Over-all, this means that the network protocol will be broken up into several RISP layers (or envelopes).
+
+You have the authentication layer, which basically only includes a Login, Logout and Session operation.
+You have the class layer which indicates what operation is being performed (get, set, lock, sync, or admin).
+You have the operation layer for the class that was specified.
+You will also have some attribute layers for handling the parameters of queries. 
+
+The class layer is used to seperate the functionally similar operations.
+
+
+------------
+
+The main stash meta file will contain all user info, and grants and revokes.  THis means that when a namespace is moved to another server, none of the users move too.  When it is attached, new Users and Grants will need to be created to access it.
+
+
+------------
+
+Locking will be a bit problematic, because we will want to try and set the locks in one atomic try.  So programatically we will generate something called a lockset.   An application can create them on the fly if they want, or they can generate it once and keep it.  You then apply that lockset to the interface and it will attempt to do so (importantly should include a timeout).
+
+------------
+
+I was originally thinking that the master and the slave services will maintain local copies of the files.  However, that may not be the case.  We should have the master that keeps the data, and the slaves retreive the data from the master (or other slaves) when they start up, but they dont write out changes locally to a file.  They will store content in files, but they should be erased when the slave starts up.   Therefore the slave and the master will behave very differently as far as its persistance goes.   From a client side they will both behave the same though.
+
+This means that when a slave connects, it needs to get ALL its information from the master.   
+
+------------
+
+What if we have multiple masters.  One for each namespace.  But then we want the slaves to connect to, and use, each namespace?   How could we handle that?  Because the usernames are not associated with the namespace..... or should it?   So when a login happens, it is logging into a namespace?
+
+How about when a user is getting a read from the slave, and then needs to do a write, which needs to be passed up to the master?  How does the slave tell the master it is doing it on behalf of a particular user?
+
+------------
+
+If we have the usernames in the namespaces, then how do we add new namespaces to the service if we need a username to do so?   Can we have global users that apply to all namespaces?   So do we put usernames back into the meta and not in the namespace at all?  That means it will be a touch harder to seperate the namespaces into different server.   Which is ok.   We will just have it so that the slaves can promote one for each namespace.  The masters and slaves would behave the same 
+
+------------
+
+Handling expired items.   When we end up with entries that expire, we will have to handle that in a clever manner.  However, we dont want to spend a lot of time expiring entries.  Therefore, we need a quick and easy method.
+
+We will have a list of lists.  We will have a list for each second of time that we have an expiry.  We will have an event that times out each second.  It looks at the first entry in the list to see if it is time to process it.  If it is, then it will expire all the elements in it and then add the empty list back to a pool.   When new entries are added with an expiry, it will try to find the entry in the list to add it.
+
+This means that every second the timer will go off.  Every time it finds an entry to expire, it will expire it.  When it has expired, we will need to add a record to the storage to indicate it has expired.    This is rather complicated, but necessary I think.   
+
+*** Alternatively, we could have a lazy expire.  This would mean that nothing is changed internally until that data is requested.  And if it has expired by then, then it should be removed.  In other words, expired items will remain in memory until it is accessed.   When loading the data file, if an entry is made that would have already expired, it could be ignored (but then, what if the expiry time is updated?, would we need such a feature?).   I guess we could maintain a list of entries that have an expiry.  Therefore if we need memory, we can go through that list, looking for entries that we can clear out.  We could trigger this every 60 seconds or so, and only do a limited number of loops (to remain responsive).
+
+------------
+Stash library
+
+The stash library can specify a multiple number of servers that it connects to.   It would normally only connect to one server at a time though.   
+To provide some control over which server is used, a priority would be specified.  All servers of the same priority are equal, but the client would always try to establish a connection with a server that has a higher higher priority.
+For example, if we specify two servers.
+MARCO (priority:10)
+POLO (priority:20)
+When the client first connects, it will try to connect with POLO because it has the highest priority.  If it connects, all well and good.  However, if connection fails, it will then try to connect to MARCO.   
+Assuming that it does connect to MARCO, it will periodically try to connect with POLO (because it is still a higher priority).   
+It gets slightly complicated if we have multiple servers with the same priority, because it needs to know what ones it has tried, and which ones it hasn't.   If there are 3 of the same priorty, you dont want to continuously try two of them and ignore the 3rd.
+
+------------
+
+

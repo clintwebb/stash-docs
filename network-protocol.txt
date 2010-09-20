@@ -1,0 +1,805 @@
+Stash network protocol
+
+
+Both file storage and network protocol will try and use the same basic RISP 
+commands, but they will be structured and utilised slightly differently.  The 
+file storage protocol will be a simplified subset of the network protocol.   
+Basically only storing the minimum information required.
+
+Every network operation that modifies the system, will need to be converted 
+into a stream for the storage system, and then read in and processed.   
+Network operations will not change the in-memory storage directly.  This helps 
+to ensure that the system will look the same when it is reloaded from the data 
+files.
+
+When series of commands are grouped together to form a single operation, it 
+will need to be wrapped in an operation object.  the operation object will 
+contain a transaction id, an integer datetime, userid that did it, and the 
+payload.
+
+The exception will be for some file manipulation commands that are used for 
+seperating the files, but dont affect any real stored data.
+
+
+
+
+Request Wrapper
+----------------------------------
+
+	Every request from a client will be wrapped inside a REQUEST command.   A 
+	client specified request ID will be provided, and will be used to identify 
+	the reply. 
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		<...>
+
+	Since a requestID is sent, this means that it is possible for the client 
+	to pipeline requests without waiting for an answer, and then process each 
+	answer as it is received.   Pipelined requests will be processed in the 
+	order that they are received, and will not begin processing until previous 
+	requests have completed.
+
+	If there is a request that needs to relay data to another server (ie, 
+	we've connected to a slave, but done a WRITE operation that needs to be 
+	sent to the master), then the client connections will not process until 
+	the reply is received.  
+
+	Every request should expect a reply.
+
+
+
+Reply Wrapper
+----------------------------------
+
+	When a request is parsed and processed successfully, a reply will 
+	generally need to be sent.  The reply will be in a REPLY wrapper.
+
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+		<...>
+
+
+Failed operations
+----------------------------------
+
+	There will be times when an operation needs to fail.  When that happens a 
+	FAILED wrapper command is sent (instead of the REPLY command).
+
+	Or if the login was not successfull.
+	STASH_CMD_FAILED <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_FAILCODE <int16>
+		STASH_CMD_FAILTEXT <str>
+
+
+
+*************************
+The following operations should be wrapped inside a STASH_CMD_REQUEST as the 
+content of a STASH_CMD_PAYLOAD command.
+
+*************************
+
+
+Authentication
+----------------------------------
+
+	When a client connection is established, it will not really be able to do 
+	anything until it has logged in.  Once logged in, the transactions do not 
+	need further authentication, but each operation will be checked against 
+	the granted rights to ensure that the user can actually do what is 
+	requested.
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_LOGIN <>
+			STASH_CMD_USERNAME <str>
+			STASH_CMD_PASSWORD <str>
+
+	If the login was successfull.
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_USER_ID <int32>
+
+
+
+Adding a user to the system
+---------------------------------------
+	
+	Creating a user required the ADDUSER right.
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_CREATE_USER <>
+			STASH_CMD_USERNAME <short-str>
+	
+	Note, that creating a user, and setting a password are two different 
+	operations.  Once a user is created, and password can be set with 
+	STASH_CMD_SET_PASSWORD.
+
+	If the operation was successfull.
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_USER_ID <int32>
+
+
+Deleting a user 
+---------------------------------------
+
+	Deleting a user requires the ADDUSER right.  If you can add a user, you 
+	can delete one also.
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_DROP_USER <>
+			STASH_CMD_USERNAME <short-str>
+	
+	If the operation was successfull.
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+
+	Note that there is no real data sent on success.  Receiving the reply is 
+	sufficient enough.
+
+
+
+
+Setting a password
+---------------------------------------
+	
+	If a password is not set at all, then the user is not usable.
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_SET_PASSWORD <>
+			STASH_CMD_USER_ID <int32> [optional]
+			STASH_CMD_USERNAME <short str> [optional]
+			STASH_CMD_PASSWORD <short-str> [optional]
+	
+	The operation will require either a UserID or a Username.  They are marked 
+	as optional, but at least one is required.  Normally, if the user is logged 
+	in, they would provide the userID.  If a user is changing another users 
+	password, then they would use the username.
+
+	Setting the password without the STASH_CMD_PASSWORD command will 
+	effectively block the user.  This is an alternative to removing the users 
+	rights.  You can either remove the users rights, or you can remove the 
+	password.  You cannot block a user while keeping both rights and password.
+
+	A user without a password cannot be used.
+
+	A user can change their own password without special rights.  However, to 
+	change another users password requires the ADDUSER right.
+
+	If the password is changed successfully,
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+
+
+Getting an ID 
+---------------------------------------
+
+	There are a lot of operations that expect ID's rather than full names.  
+	This is to reduce the amount of data sent with each operation, but it also 
+	means that if the client doesn't yet know the ID then it will need to 
+	request it.  It also means that the client may need to send some requests 
+	to get the ID's before it can actually make the operation it wants to make.
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_GETID <>
+
+			STASH_CMD_USERNAME <short-str> 
+
+			STASH_CMD_NAMESPACE <str>      
+
+			STASH_CMD_NAMESPACE_ID <int32>
+			STASH_CMD_TABLE <str>
+	
+	If the user exists in the system.
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_USER_ID <int32>	[optional]
+		STASH_CMD_NAMESPACE_ID      [optional]
+		STASH_CMD_TABLE_ID          [optional]
+
+	Depending on what is in the Request, the answer will be in the reply.  
+	Only one lookup per request.  Therefore, do not put the Username and a 
+	Namespace in a single operation and expect to get both ID's back.
+
+
+
+
+Granting rights.
+---------------------------------------
+
+	Users cannot do very much without the right to do it.  The security system 
+	of Stash revolves around the concept that unless a User has been explicitly 
+	given the right to do something, they cannot do it.  There are a few 
+	generalized rights, but by default a user cannot access anything until it 
+	is Granted some rights.
+
+	Rights are reciprocal.   Whatever right a user is given, can be passed on 
+	to other users.  For example, if a user has the right to create tables in a 
+	namespace, it can give that right to other users.   A user cannot grant a 
+	right that it doesn't have itself.
+
+	There is no concept of security groups.  Rights can be assigned on a user 
+	by user basis.
+
+	An administrator can grant rights to users when accessing the data files 
+	directly.  However, in order to do this, the server must be offline.
+
+	NOTE that grants are stored in the server meta data, and are not stored as 
+	part of the namespace.  This means that if you detach the namespace and 
+	move it to another server, the grants will not move with it.  Actually, if 
+	you detach a namespace, the grants for that namespace will no longer be 
+	valid, and will be removed when the next compaction is done.
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_GRANT <>
+			STASH_CMD_USER_ID <int32>
+			STASH_CMD_NAMESPACE_ID <int32> [optional]
+			STASH_CMD_TABLE_ID <int32> [optional]
+			STASH_CMD_RIGHT_ADDUSER [optional]
+			STASH_CMD_RIGHT_CREATE  [optional]
+			STASH_CMD_RIGHT_DROP    [optional]
+			STASH_CMD_RIGHT_SET     [optional]
+			STASH_CMD_RIGHT_UPDATE  [optional]
+			STASH_CMD_RIGHT_DELETE  [optional]
+			STASH_CMD_RIGHT_QUERY   [optional]
+			STASH_CMD_RIGHT_LOCK    [optional]
+			STASH_CMD_RIGHT_SYNC    [optional]
+			
+	If the grant is successful;
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+
+
+	Granting a user the right to create users
+
+		STASH_CMD_REQUEST <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_GRANT <>
+				STASH_CMD_USER_ID <int32>
+				STASH_CMD_RIGHT_ADDUSER
+
+
+
+	Granting a user the right to create namespaces
+
+		STASH_CMD_REQUEST <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_GRANT <>
+				STASH_CMD_USER_ID <int32>
+				STASH_CMD_RIGHT_CREATE
+
+
+	Granting a user the right to create tables in a namespace
+	(implies the right to create anything within a namespace.  
+	Only thing that can be created in the namespace is a table.)
+
+		STASH_CMD_REQUEST <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_GRANT <>
+				STASH_CMD_USER_ID <int32>
+				STASH_CMD_NAMESPACE_ID <int32>
+				STASH_CMD_RIGHT_CREATE
+
+
+	Granting a user the right to write to a table.
+
+		STASH_CMD_REQUEST <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_GRANT <>
+				STASH_CMD_USER_ID <int32>
+				STASH_CMD_NAMESPACE_ID <int32>
+				STASH_CMD_TABLE_ID <int32>
+				STASH_CMD_RIGHT_SET
+
+
+	Granting a user the right to read from a table.
+
+		STASH_CMD_REQUEST <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_GRANT <>
+				STASH_CMD_USER_ID <int32>
+				STASH_CMD_NAMESPACE_ID <int32>
+				STASH_CMD_TABLE_ID <int32>
+				STASH_CMD_RIGHT_QUERY
+
+
+	Granting a user the right to set a lock on a table.  This is quite 
+	important.  If a user has the ability to set a lock, it can effectively 
+	block access to that table.   To avoid unexpected problems, the right to 
+	lock should only be granted to users that have a need for it.
+
+		STASH_CMD_REQUEST <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_GRANT <>
+				STASH_CMD_USER_ID <int32>
+				STASH_CMD_NAMESPACE_ID <int32>
+				STASH_CMD_TABLE_ID <int32>
+				STASH_CMD_RIGHT_LOCK
+
+
+	Granting a user the right to update records in a table.
+
+		STASH_CMD_REQUEST <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_GRANT <>
+				STASH_CMD_USER_ID <int32>
+				STASH_CMD_NAMESPACE_ID <int32>
+				STASH_CMD_TABLE_ID <int32>
+				STASH_CMD_RIGHT_UPDATE
+
+
+	Granting a user the right to delete records in a table.
+
+		STASH_CMD_REQUEST <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_GRANT <>
+				STASH_CMD_USER_ID <int32>
+				STASH_CMD_NAMESPACE_ID <int32>
+				STASH_CMD_TABLE_ID <int32>
+				STASH_CMD_RIGHT_DELETE
+
+
+	Granting a user the right to drop tables.
+
+		STASH_CMD_REQUEST <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_GRANT <>
+				STASH_CMD_USER_ID <int32>
+				STASH_CMD_NAMESPACE_ID <int32>
+				STASH_CMD_TABLE_ID <int32> [optional]
+				STASH_CMD_RIGHT_DROP
+
+		if a TableID is specified then the user is given the right to drop that 
+		table (if a table is created for that user, give them the option of 
+		dropping it).  If no TableID is specified, then the user is given the 
+		right to drop any table in the namespace. A namespace must be 
+		specified.  Users are not able to get the right drop any table from any 
+		namespace.  There is no ability to allow a user to drop tables from a 
+		namespace EXCEPT for specific ones.   
+
+
+---------------------------------------
+Revoking rights.
+
+	A revoke merely cancels out a previous grant.  By default users do not 
+	have any right at all to do anything, so a grant must be specified.  When 
+	revoking a right, it must apply to a specific grant.  For example, if a 
+	user is given the right to drop any table in a namespace, and you try to 
+	revoke the right to drop a specific table, the revoke will fail because the 
+	user was not specifically granted right to drop that table.   This can be 
+	confusing if the user has both a global grant and a specific grant, and you 
+	revoke one, the other is still there.
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_REVOKE <>
+			STASH_CMD_USER_ID <int32>
+			STASH_CMD_NAMESPACE_ID <int32> [optional]
+			STASH_CMD_TABLE_ID <int32> [optional]
+			STASH_CMD_RIGHT_ADDUSER [optional]
+			STASH_CMD_RIGHT_CREATE  [optional]
+			STASH_CMD_RIGHT_DROP    [optional]
+			STASH_CMD_RIGHT_SET     [optional]
+			STASH_CMD_RIGHT_UPDATE  [optional]
+			STASH_CMD_RIGHT_DELETE  [optional]
+			STASH_CMD_RIGHT_QUERY   [optional]
+			STASH_CMD_RIGHT_LOCK    [optional]
+
+	If the revoke is successful, a mostly empty reply is valid.
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+
+
+---------------------------------------
+Creating a Namespace
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_CREATE_NAMESPACE <>
+			STASH_CMD_NAMESPACE_ID <int32>
+			STASH_CMD_NAMESPACE <short-str>
+
+	If the namespace is created;
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_NAMESPACE_ID <int32>
+
+
+---------------------------------------
+Dropping a Namespace
+
+	To ensure that a namespace is not dropped accidentally, both the ID and the 
+	name are required.  This is not really necessary for file storage, but 
+	useful if trying to recover a corrupted stream.
+
+	NOTE: Dropping a namespace will actually delete the entire namespace 
+	directory, and all references to it will be removed from the meta stream 
+	when it is compacted.
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_DROP <>
+			STASH_CMD_NAMESPACE_ID <int32>
+			STASH_CMD_NAMESPACE <short-str>
+
+	If the operation is successful, a mostly empty reply is valid.
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+
+
+---------------------------------------
+Creating a Table
+
+	Tables are created in a Namespace, and unlike SQL tables, they are highly 
+	dynamic.  The 'column' names are dynamic and do not need to be created 
+	specifically.  Internally, the system does keep track of column names as 
+	ID's, but they are generated on the fly in the system.
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_CREATE_TABLE <>
+			STASH_CMD_NAMESPACE_ID <int32>
+			STASH_CMD_TABLE <string>
+			STASH_CMD_STRICT     [optional]
+			STASH_CMD_OVERWRITE  [optional]
+			STASH_CMD_UNIQUE     [optional]
+
+	Strict mode means that only row-names that have been specifically created 
+	will be allowed.   
+
+	If Overwrite is specified (with Unique), then when adding a record with the 
+	same name as one already existing, it will over-write the existing record.  
+	This should be used with care, and should only really be used when using 
+	the stash as some sort of cache similar to memcached.
+
+	When Unique is specified, then it will expect that there should not be more 
+	than one record in the table that has the same name.  Without the Unique 
+	modifier, it is perfectly legal (and desired) that more than one record 
+	with the same row name.
+
+	Normally your tables will follow one of two designs.  
+
+		1.  Each record is given a unique name (no duplicates), and is normally 
+			some sort of primary key.
+
+		2.  Multiple records with the same name (and normally the Name 
+			indicates what kind of record it is), to allow for more broad and 
+			useful lookups on particular attributes's.
+
+	If the table was created successfully,
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_TABLE_ID <int32>
+	
+
+
+
+---------------------------------------
+Dropping a Table
+
+	Dropping a table is the same as creating it.  The actual table name is 
+	required as well, to ensure that corruptions are caught easier.  When 
+	recovering a corrupted file, it is easier to verify both ID and name, as 
+	apposed to just an ID.
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_DROP_TABLE <>
+			STASH_CMD_NAMESPACE_ID <int32>
+			STASH_CMD_TABLE_ID <int32>
+			STASH_CMD_TABLE <string>
+
+	If the table was dropped successfully,
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+
+
+---------------------------------------
+Creating a Row Name
+
+	Tables can generally end up with a lot of records with unique names, or a 
+	lot of records with the same name.  In the latter case, we need to assign 
+	the valid names to the table, and they are given NameID's.  When adding new 
+	records to the table, we will need to use those NameID's.
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_CREATE_NAME <>
+			STASH_CMD_NAMESPACE_ID <int32>
+			STASH_CMD_TABLE_ID <int32>
+			STASH_CMD_NAME <string>
+
+	When tables do not have the Strict attribute, and the names are not created 
+	specfically, then that name will not have an associated NameID.  Only those 
+	names specifically bound, will have a NameID.
+	
+	When a bound name is added to a table, it stays with the table, and there 
+	is probably not going to be a way of removing it.
+
+	If the name was created successfully,
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_NAME_ID <int32>
+
+
+---------------------------------------
+Assigning attributes to a table
+
+	Tables can have records that are dynamic where any kind of key/value pairs 
+	can be added to it.  Attributes can only be assigned to named entries, or 
+	to the entire table.
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_CREATE_KEY <>
+			STASH_CMD_NAMESPACE_ID <int32>
+			STASH_CMD_TABLE_ID <int32>
+			STASH_CMD_NAME_ID <int32> [optional]
+			STASH_CMD_KEY <str>
+
+	If the key has been saved, 
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_KEY_ID <int32>
+
+
+---------------------------------------
+Locking tables.
+
+	The client will need the ability to lock one or more tables so that it can 
+	multiple operations without causing problems.   Individual operations 
+	would also create an informal lock before doing anything (meaning that 
+	they wont actually create a lock, but will check to make sure there are no 
+	other locks going down.
+	
+	Actual locks will need to be assigned by the master server.  When setting a 
+	lock, we need to do multiple locks, so its a little bit different that some 
+	of the other messages that are passed back and forth.  
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_EXPIRE <int32>
+		STASH_CMD_LOCK <>
+			STASH_CMD_LOCK_READ <>				[optional]
+				STASH_CMD_NAMESPACE_ID <int32>
+				STASH_CMD_TABLE_ID <int32>
+			STASH_CMD_LOCK_READWRITE <>			[optional]
+				STASH_CMD_NAMESPACE_ID <int32>
+				STASH_CMD_TABLE_ID <int32>
+
+	If the lock has been established, 
+	STASH_CMD_REPLY <>
+		STASH_CMD_REQUEST_ID <int32>
+																																																			   
+	There can be any number of locks in the request.   
+	
+	The lock operation is atomic.  All of the locks go in place, or none of 
+	them.  Internally it needs to remain deadlock free.  So a client can only 
+	set one lock at a time.   If the client already holds a lock, and attempts 
+	to create another one, the client will receive an error.
+	
+	If the client disconnects while it holds a lock, the lock is automatically 
+	released.
+	
+	Generally the client will block (wait) until the lock is established, or 
+	timed out.
+	
+	Setting an Expiry means that the request will expire after those seconds.  
+	But once the lock is allocated the expiry is ignored.  It is only to have a 
+	timeout on the request.
+	
+---------------------------------------
+Unlocking tables.
+
+	Since a client can only hold one lock at a time, the Unlock command is 
+	very simple.
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_UNLOCK
+
+
+---------------------------------------
+Creating a new row.
+
+---------------------------------------
+Adding records to a table.
+
+	Adding a record is a little more complicated than previous operations we 
+	have seen.  This is mostly because the actual data can be expressed using 
+	different primatives.  For example, we can be adding an integer, or a date, 
+	or a string, or even a hashmap (that is multi-dimensional).
+
+	Key's within a record must be unique.  If multiple entries are required in 
+	a record they should be put in a hashmap (with will yield yet another key 
+	scope).
+
+	STASH_CMD_REQUEST <>
+		STASH_CMD_REQUEST_ID <int32>
+		STASH_CMD_SET <>
+			STASH_CMD_NAMESPACE_ID <int32>
+			STASH_CMD_TABLE_ID <int32>
+			STASH_CMD_ROW_ID <int32>      [optional]
+			STASH_CMD_NAME_ID <int32>     [optional]
+			STASH_CMD_NAME <str>          [optional]
+			STASH_CMD_ATTRIBUTE <>        [optional]
+				STASH_CMD_KEY_ID <int32>      [optional]
+				STASH_CMD_KEY <str>           [optional]
+				STASH_CMD_VALUE <>
+					STASH_CMD_AUTO            [optional]
+					STASH_CMD_INTEGER <int32> [optional]
+					STASH_CMD_STRING <str>    [optional]
+					STASH_CMD_DATETIME <str>  [optional]
+					STASH_CMD_DATE <int32>    [optional]
+					STASH_CMD_TIME <int32>    [optional]
+					STASH_CMD_LIST <>
+						STASH_VALUE <>
+							...
+						STASH_VALUE <>
+							...
+					STASH_CMD_HASHMAP <>      [optional]
+						STASH_CMD_ATTRIBUTE <>        [optional]
+							STASH_CMD_KEY 
+							STASH_CMD_VALUE <>
+								...
+						STASH_CMD_ATTRIBUTE <>        [optional]
+							STASH_CMD_KEY 
+							STASH_CMD_VALUE <>
+								...
+			STASH_CMD_ATTRIBUTE <>
+				...
+	
+	Even though most of the commands in this operation are marked as optional, 
+	a combination of them are required.  For example, depending on how the 
+	table and names were setup, we would require either a NAME or a NAME_ID.
+
+	Following are some examples of various SET conditions.
+
+	Adding an entry when not using name and key ID's.
+
+		STASH_CMD_REQUEST <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_SET <>
+				STASH_CMD_NAMESPACE_ID <int32>
+				STASH_CMD_TABLE_ID <int32>
+				STASH_CMD_NAME <str>
+				STASH_CMD_ATTRIBUTE <>
+					STASH_CMD_KEY <str>
+					STASH_CMD_VALUE <>
+						STASH_CMD_INTEGER <int32> [optional]
+						STASH_CMD_STRING <str>    [optional]
+						STASH_CMD_DATETIME <str>  [optional]
+						STASH_CMD_DATE <int32>    [optional]
+						STASH_CMD_TIME <int32>    [optional]
+						STASH_CMD_HASHMAP <>      [optional]
+							STASH_CMD_KEY 
+							STASH_CMD_VALUE <>
+								...
+				STASH_CMD_ATTRIBUTE <>
+					...
+
+	Adding an entry when using name and key ID's.
+
+		STASH_CMD_REQUEST <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_SET <>
+				STASH_CMD_NAMESPACE_ID <int32>
+				STASH_CMD_TABLE_ID <int32>
+				STASH_CMD_NAME_ID <int32>
+				STASH_CMD_ATTRIBUTE <>
+					STASH_CMD_KEY_ID <int32>
+					STASH_CMD_VALUE <>
+						STASH_CMD_INTEGER <int32> [optional]
+						STASH_CMD_STRING <str>    [optional]
+						STASH_CMD_DATETIME <str>  [optional]
+						STASH_CMD_DATE <int32>    [optional]
+						STASH_CMD_TIME <int32>    [optional]
+						STASH_CMD_HASHMAP <>      [optional]
+							STASH_CMD_KEY <str>   [optional]
+							STASH_CMD_VALUE <>
+								...
+
+	Adding an key with an auto-generated integer (using ID's).
+
+
+		STASH_CMD_REQUEST <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_SET <>
+				STASH_CMD_NAMESPACE_ID <int32>
+				STASH_CMD_TABLE_ID <int32>
+				STASH_CMD_NAME_ID <int32>
+				STASH_CMD_ATTRIBUTE <>
+					STASH_CMD_KEY_ID <int32>
+					STASH_CMD_VALUE <>
+						STASH_CMD_AUTO
+						
+		and if the record was created successfully, an integer will be 
+		returned, which is incremented each time.
+		STASH_CMD_REPLY <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_INTEGER <int32>
+		
+
+
+	Adding an integer (using ID's).
+
+		STASH_CMD_SET <>
+			STASH_CMD_NAMESPACE_ID <int32>
+			STASH_CMD_TABLE_ID <int32>
+			STASH_CMD_NAME_ID <int32>
+			STASH_CMD_ATTRIBUTE <>
+				STASH_CMD_KEY_ID <int32>
+				STASH_CMD_VALUE <>
+					STASH_CMD_INTEGER <int32>
+
+
+Setting more than one attribute at a time.  
+
+	From a network perspective we dont want to make a request for every 
+	key/value pair that is set, we want to do one network request only.
+
+	Multiple STASH_CMD_ATTRIBUTE entries can exist for each request.
+
+Updating records in a table.
+
+	Updating records are similar to setting a value, however we are updating a 
+	particular record.
+
+Deleting attributes in a record.
+
+Deleting records in a table.
+
+Records that expire.
+
+	When setting or updating records in a table, an expiry can be specified.  
+	The expiry indicates seconds.  The storage of this information will need to 
+	keep track of the time of objects that will expire.  When an entry expires, 
+	it is eventually removed from memory, and can be compacted out of the data 
+	file.   
+
+
+Query
+
+		STASH_CMD_REQUEST <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_QUERY <>
+				STASH_CMD_NAMESPACE_ID <int32>
+				STASH_CMD_TABLE_ID <int32>
+				STASH_CMD_CONDITION <>
+
+	reply.
+		STASH_CMD_REPLY <>
+			STASH_CMD_REQUEST_ID <int32>
+			STASH_CMD_COUNT <int32>			## number of rows.
+			STASH_CMD_ROW <>
+				STASH_CMD_ROW_ID <int32>
+				STASH_CMD_NAME_ID <int32>
+				STASH_CMD_COUNT <int32>		## number of attributes.
+				STASH_CMD_ATTRIBUTE <>
+					STASH_CMD_KEY_ID <int32>
+					STASH_CMD_VALUE <...>
+				STASH_CMD_ATTRIBUTE <>
+					STASH_CMD_KEY_ID <int32>
+					STASH_CMD_VALUE <...>
+			STASH_CMD_ROW <>
+				...
+
+
+
+Conditions
+
+	STASH_CMD_CONDITION <>
+		STASH_CMD_COND_NAME <>
+		STASH_CMD_COND_AND <>
+			STASH_CMD_COND_A <>
+			STASH_CMD_COND_B <>
+		STASH_CMD_COND_OR <>
+			STASH_CMD_COND_A <>
+			STASH_CMD_COND_B <>

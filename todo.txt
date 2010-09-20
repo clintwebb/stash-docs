@@ -1,0 +1,59 @@
+stash
+tasks to do
+
+
+------------------------------------------------------------------------------- 
+
+when deleting a table or a namespace, need to go through each user and check the rights list and remove all rights that point to the 
+table or namespace we are deleting.
+
+-------------------------------------------------------------------------------
+
+library interface: locksets
+
+-------------------------------------------------------------------------------
+
+stashd needs to handle locking of tables/names.
+
+-------------------------------------------------------------------------------
+
+create tool to revoke rights.
+
+-------------------------------------------------------------------------------
+
+create tool to backup data sources (force a datafile split, and backup everything except that last file).
+
+-------------------------------------------------------------------------------
+
+create tool to compact the data source
+	* load in everything and cross reference it with a transaction id.  Make a note of any clashes.
+	* load data in again, this time processing the data, looking at the cross reference clashes and 
+	  only write out things that havent clashed.
+	* write out the files with the redundant data removed.
+	* this would use a lot of memory, so it wont be able to cross reference everything.   
+		Maybe have to do it in cycles.  
+			* load in X number of transactions.  
+			* Go through the rest of the data to see if any of them clash.  
+			* Write out adjusted values
+			* load in X more, and so on, till the end.
+	* when finished, need to rename the compacted file back to the original.
+
+-------------------------------------------------------------------------------
+
+create tool that loads in the stash and the namespaces and reports any errors with the file.  As features are added, functionality 
+should be added to this tool to detect possible problem.
+
+	* for example, when tables are created, they are given an ID.  Report any instance where an ID is referenced that is invalid.
+
+-------------------------------------------------------------------------------
+
+the connections need to take the priority into account when establishing connections.  First iteration allows for it to just attempt 
+the first, and if that drops off, try the next... and so on.
+
+-------------------------------------------------------------------------------
+
+stashd does not shutdown cleanly while a client is connected.
+  stashd: stashd.c:501: client_shutdown: Assertion `client->closing == 0' failed.
+
+-------------------------------------------------------------------------------
+
